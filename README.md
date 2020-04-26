@@ -14,7 +14,7 @@ I have some more that I'll need to image from the BDS-C
 Users Group that I'll add soon.
 
 Each image can be attached to a SIMH AltairZ80 simulator's
-floppy disk controller - and, as the CP/M system BIOS
+floppy disk controller - and, so long as the CP/M system BIOS
 software supports Single Density 8-inch disks,
 you will be able to read them. I give an example below
 using SIMH altairz80 with my distributed version of CP/M Plus - but you

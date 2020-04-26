@@ -1,0 +1,6 @@
+# Default is to keep crlf line endings
+text=auto
+
+*.IMD binary
+*.imd binary
+

@@ -79,3 +79,22 @@ emulated) Godbout/CompuPro DISK1A floppy disk controller.
 
 I've also included the source code in the *d2imd* folder.
 
+Some History
+------------
+
+I obtained the 8-inch disks copies from Bill Bolton who
+ran one of the first RCPM Bulletin Boards in Sydney,
+Australia (Software Tools RCP/M).
+
+I physically drove to Sydney from my home in Newcastle (about
+140km) to make them with a stock of blank floppies and ran
+a sector-based disk copy program for many hours to make them.
+I think Bill's system was a XITAN S-100 system.  Bill's disks
+were sent to him by airmail from the USA.
+
+It was at a time when it was quicker doing this than downloading
+them at 300 or 1200/75 baud via a modem!  I also ran an RCP/M
+system here in Newcastle back in the day... but that's another
+story...
+
+Tony

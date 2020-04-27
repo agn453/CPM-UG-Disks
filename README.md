@@ -68,11 +68,10 @@ tweety:~/cpmplus$ altairz80 cpm3bk
 A>L:
 ..
 
-To exit SIMH use Ctrl-E, the quit to the sim> prompt.
+To exit SIMH use Ctrl-E, then quit to the sim> prompt.
+Drive L: corresponds to the attached floppy disk image.
 
 ```
-
-* Drive L: corresponds to the attached floppy disk image.
 
 Note:  In user area 3 on drive A: is the program I used to
 produce the disk images (D2IMD). It uses a separate copy

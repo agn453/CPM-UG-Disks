@@ -1,0 +1,240 @@
+;
+; IOPORTS.LIB  -  HARDWARE I/O PORT EQUATES
+;
+; Last edited: 11-Jun-2008
+
+;---------------------------------
+;
+; S-100 System Memory select and front panel
+;
+BSELCT	EQU  040H	;Bank select memory addressing port
+XADDR	EQU  0FDH	;Extended addressing port
+LEDS	EQU  0FFH	;Front panel LEDs
+
+;---------------------------------
+;
+; CompuPro DISK 1
+;
+FDPORT	EQU  0C0h	;Base port address for Controller
+FDCS	EQU  FDPORT	;Status register
+FDCD	EQU  FDPORT+1	;Data register
+DMA	EQU  FDPORT+2	;Dma address (when write)
+INTS	EQU  FDPORT+2	;Status Register (when read)
+SER	EQU  FDPORT+3	;Serial port
+
+;
+; CompuPro DISK 1 Controller function definitions
+;
+F$SPEC	EQU  03		;Specify
+F$DSTS	EQU  04		;Drive status
+F$WRT	EQU  05		;Write data
+F$RDAT	EQU  06		;Read data
+F$RECA	EQU  07		;recalibrate
+F$RSTS	EQU  08		;Read status
+F$DRID	EQU  10		;Read ID
+F$SEEK	EQU  15		;Seek
+F$DBLE	EQU  040h	;MFM bit
+
+;---------------------------------
+;
+; CompuPro DISK 2 / Selector Channel
+;
+D2$PORT	EQU  0C8h	;Base port address
+D2$CNTL	EQU  D2$PORT	;Control port
+D2$STAT	EQU  D2$PORT	;Status port is same as control
+D2$DATA	EQU  D2$PORT+1	;Data port (I/O)
+
+;
+; Disk 2 Controller Commands
+;
+D2$READ	EQU  1100$1000b	;Read data command
+D2$WRT	EQU  1101$0000b	;Write data command
+D2$TIME	EQU  0000$0110b	;Time out
+D2$STRB	EQU  1000$0000b	;Drive strobe
+D2$HEAD	EQU  1001$0000b	;Head register
+D2$CYL	EQU  1000$1000b	;Cylinder register
+D2$SEC	EQU  1001$1000b	;Sector register
+D2$SIN	EQU  1010$0000b	;Step in
+D2$SOU	EQU  1000$0000b	;Step out
+D2$RST	EQU  0000$0100b	;Reset drive command bit
+D2$ATTN	EQU  1000$0000b	;Acknowledge end of state machine sequence (interrupt)
+
+;
+; Disk 2 Status Bits
+;
+;  ATTN	EQU  1000$0000b	;State machine activity bit
+D2$TOUT	EQU  0100$0000b	;Timeout error bit
+D2$CRC	EQU  0010$0000b ;CRC error on data sector bit
+D2$OVR	EQU  0001$0000b	;Overrun on data transfer error bit
+D2$NRDY	EQU  0000$1000b	;Drive not ready status bit
+D2$SEKD	EQU  0000$0100b	;Seek done status bit
+D2$WRTF EQU  0000$0010b	;Write fault (negative true status)
+D2$CYL0	EQU  0000$0001b	;Cylinder 0 status bit (negative true status)
+
+;
+; Selector Channel
+;
+SELCHAN	EQU  0F0h	;Selector channel port
+SELPRI	EQU  10		;Disk priority (as a DMA device, switches set)
+SELBYT	EQU  2Fh-SELPRI	;Selector channel command byte
+
+;---------------------------------
+;
+; FD1795 based 5-1/4" Mini-floppy Controller
+;
+P$MDselect equ	0E3h
+P$MDstat   equ	0E4h
+P$MDtrack  equ	0E5h
+P$MDsector equ	0E6h
+P$MDdata   equ	0E7h
+P$MDcmnd   equ	0E4h
+
+;---------------------------------
+;
+; FULCRUM VIOX-2 Video card
+;
+vioxst	EQU  21h	;Fulcrum VIO-X2 video status
+vioxd	EQU  20h	; and data registers
+
+;---------------------------------
+;
+; GDC-512 Video Graphics Card
+;
+GDCST	EQU  0D1h	;GDC-512 video status
+GDCD	EQU  0D0h	; and data registers
+
+;---------------------------------
+;
+; Z80 SIOs
+;
+SIO0	EQU  0		;Serial port 0
+SIO1	EQU  1		;Serial port 1
+SIO2	EQU  4		;Serial port 2
+SIO3	EQU  5		;Serial port 3
+
+;
+; Z80 SIO and Fulcrum data bit definitions
+;
+SIODAT	EQU  0		;Serial data port offset
+SIOSTS	EQU  2		;Serial status port offset
+SIOTBE	EQU  0000$0100B	;Transmit buffer empty bit
+SIODAV	EQU  0000$0001B	;Data available bit
+
+;---------------------------------
+;
+; Z80 CTC
+;
+CTCA	EQU  10H	;Clock timer port A
+CTCB	EQU  11H	;Clock timer port B
+CTCC	EQU  12H	;Clock timer port C
+CTCD	EQU  13H	;Clock timer port D
+
+;---------------------------------
+;
+; Z80 PIO (Centronics port)
+;
+PIOA	EQU  08h
+PIOB	EQU  09h
+
+PIODAT	EQU  0
+PIOSTS	EQU  2
+
+;---------------------------------
+;
+; CompuPro System Support 1
+;
+SS1B	EQU  50h	;System Support starting port
+;
+; Priority Interrupt Controller (8259A) Ports:
+SS1MP0	EQU  SS1B+0	;Master PIC port 0
+SS1MP1	EQU  SS1B+1	;Master PIC port 1
+SS1SP0	EQU  SS1B+2	;Slave PIC port 0
+SS1SP1	EQU  SS1B+3	;Slave PIC port 1
+;
+; PIC Commands:
+EOI	EQU 001$00$000b	;Non-specific End Of Interrupt
+SEOI	EQU 011$00$000b	;Specific End Of Interrupt
+SETPRI	EQU 110$00$000b	;Set Priority command
+READISR	EQU 000$01$011b	;Read IS register (interrupts being serviced)
+SMMON	EQU 011$01$000b	;Special mask mode on
+SMMOFF	EQU 010$01$000b	;Special mask mode off
+;
+; Timer/Counter (8253) Ports
+SS1T0	EQU  SS1B+4	;Timer number 0
+SS1T1	EQU  SS1B+5	;Timer number 1
+SS1T2	EQU  SS1B+6	;Timer number 2
+SS1TC	EQU  SS1B+7	;Timer control port
+;
+; Floating Point Processor (8231, 8232, 9511, 9512) Ports
+SS1FPPD	EQU  SS1B+8	;Floating point processor data port
+SS1FPPC	EQU  SS1B+9	;Floating point processor command port
+;
+; Battery backed-up Real Time Clock (OKI) Ports
+SS1CLKC	EQU  SS1B+10	;Clock command port
+SS1CLKD	EQU  SS1B+11	;Clock data port
+;
+; RTC Control Bits:
+RTC$HLD	EQU  0100$0000b	;Hold clock value control bit
+RTC$WRT	EQU  0010$0000b	;Write to clock chip control bit
+RTC$READ EQU 0001$0000b	;Read clock chip control bit
+;
+; System Support I UART Ports
+SS1UD	EQU  SS1B+12	;Uart data port
+SS1US	EQU  SS1B+13	;Uart status port
+SS1UM	EQU  SS1B+14	;Uart modem port
+SS1UC	EQU  SS1B+15	;Uart command port
+;
+; System Support Uart Active Commands
+SS1TENB	EQU  0010$0111b	;Enable transmission control byte
+SS1TDIS	EQU  0000$0110b	;Disable transmission control byte
+;
+; UART status bits:
+SS1DAV	EQU  0000$0010b	;System Support Data Available
+SS1TBE	EQU  0000$0001b	;System Support Transmit Buffer Empty
+SS1DSR	EQU  1000$0000b	;System Support Data Set Ready input status
+;
+; System Support Uart Active Status Masks
+SS1TMSK	EQU  SS1TBE ;or SS1DSR	;Transmit Ready Mask
+SS1FMSK	EQU  SS1TBE ;or SS1DSR	;Transmit Ready Bit Flip Mask
+
+;---------------------------------
+;
+; SIMH emulator
+;
+SIMHPORT EQU 0FEh	;SIMH port
+
+;
+; SIMH pseudo device functions
+SIMH$PRTMS EQU	0	;Print current time in milliseconds
+SIMH$NEWTM EQU	1	;Start new timer on top of timer stack
+SIMH$ENDTM EQU	2	;Stop timer on top of timer stack and show
+SIMH$RSTPTR EQU	3	;Reset PTR device
+SIMH$ATTPTR EQU	4	;Attach PTR device
+SIMH$DETPTR EQU	5	;Detach PTR device
+SIMH$GETVER EQU 6	;Get version of pseudo device
+SIMH$RDZCLK EQU 7	;Read clock in ZSDOS format
+SIMH$WRZCLK EQU 8	;Write clock in ZSDOS format
+SIMH$RDCLK EQU  9	;Read clock in CP/M 3 format
+SIMH$WRCLK EQU 10	;Write clock in CP/M 3 format
+SIMH$BKGET EQU 11	;Get selected bank
+SIMH$BKSEL EQU 12	;Bank select
+SIMH$GETCM EQU 13	;Get common memory base
+SIMH$RESET EQU 14	;Reset pseudo device
+SIMH$SHOWTM EQU 15	;Show time difference to timer on top of timer stack
+SIMH$OPNPTR EQU 16	;Attach PTR to file specified at CP/M command line
+SIMH$CLSPTR EQU 17	;Close and detach PTR device
+SIMH$CHKBK EQU 18	;Check for banked memory
+SIMH$Z80   EQU 19	;Set CPU to Z80
+SIMH$8080  EQU 20	;Set CPU to 8080
+SIMH$STINT EQU 21	;Start timer interrupts
+SIMH$ETINT EQU 22	;End timer interrupts
+SIMH$DELTA EQU 23	;Set timer interval
+SIMH$TADDR EQU 24	;Set timer interrupt address
+SIMH$RSSW  EQU 25	;Reset millisecond stopwatch
+SIMH$RDSW  EQU 26	;Read millisecond stopwatch
+SIMH$SLEEP EQU 27	;Sleep
+SIMH$HSTP  EQU 28	;Get host system path separator
+SIMH$HLKUP EQU 29	;Perform host system filename lookup
+
+;---------------------------------
+;<END OF IOPORTS.LIB>

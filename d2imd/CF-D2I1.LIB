@@ -1,0 +1,66 @@
+;	+-----------------------+
+;	|			|
+;	|  C O N F I G . L I B	|
+;	|			|
+;	+-----------------------+
+;
+; Configuration file for building BIOS FDDISK1 module
+; for use with D2IMD.  (Can't call these directly via
+; the BIOS because they are in bank 0 and we are in
+; the TPA memory bank)
+;
+; Modification History
+;
+;	26-May-2007	Tony Nicholson	Initial version
+;
+;	20-Jun-2008	Tony Nicholson	Add equates so the latest
+;					version of FDDISK1 with SIMH
+;					support can be used
+;	03-Aug-2008	Tony Nicholson	Add support for BigBoard-II
+;					1024/9 sectors per track format
+;
+
+true	equ	-1
+false	equ	not true
+
+s100$system equ	true	; TRUE for "real" S-100 hardware
+simh	equ	false	; TRUE for running under SIMH
+;
+; Don't change any of the following
+;
+banked	equ	true	; TRUE for Banked memory
+bankmem	equ	false	; TRUE to support Cromemco Bank Select memory boards
+ldrbios equ	false	; TRUE to generate Loader BIOS 
+disk1	equ	true	; TRUE for CompuPro DISK1 floppy controller
+disk1$debug equ	true	; TRUE enables verbose error messages in FDDISK1
+disk1$minicd equ false	; TRUE if 5.25" minifloppy on drives C: and D:
+disk1$bb2$read9 equ true; TRUE to include BigBoard-II 1024/9 format
+disk1$userf equ false	; TRUE for get/set D1FLAG via USERF routine
+disk1$skew equ false	; TRUE to enable skew toggle via D1FLAG
+disk1$ibm$at equ false	; TRUE for IBM-PC/AT HD 80 Track drive support
+
+;
+; Dummy CP/M drive to physical disk mapping table macro
+;
+drivetable macro
+
+  if s100$system
+	extrn	fddd0,fddd1
+	defw	fddd0,fddd1			; Drive A & B
+    if disk1$minicd
+	extrn	fddd2,fddd3
+	defw	fddd2,fddd3			; Drive C & D
+    else
+	defw	0,0
+    endif
+	defw	0,0,0,0,0,0,0,0,0,0,0,0		; Drives E-P don't exist
+  endif
+
+  if simh
+	extrn	fddd0,fddd1,fddd2,fddd3
+	defw	0,0,0,0,0,0,0,0			; Drives A-H are hard disks
+	defw	fddd0,fddd1,fddd2,fddd3		; Drives I-L
+	defw	0,0,0,0				; Drives M-P don't exist
+  endif
+
+	endm

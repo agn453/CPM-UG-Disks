@@ -1,0 +1,787 @@
+	title	DISKCOPY - CP/M Plus Disk Copying Utility
+;
+;  D I S K C O P Y
+;
+;  This is a general purpose, system independent disk copying
+;  program for CP/M Plus.  Copies are made using the BIOS
+;  routines, with disk density and track details being computed
+;  from the Disk Parameter Blocks.
+;
+;  For eight-inch floppies the TRK0SD symbol should be set TRUE
+;  since the standard states that track zero is single density 128
+;  byte sectors, 26 sectors per track.
+;
+;  This source file is written for the Microsoft M80 assembler.
+;  To produce a .COM file -
+;
+;	M80 =DISKCOPY
+;	L80 DISKCOPY,DISKCOPY/N/E
+;
+;  Author:	Tony Nicholson
+;
+;
+	aseg
+	org	0100h
+	.z80
+
+false	equ	0
+true	equ	not false
+
+trk0sd	equ	true	; TRUE for 8" floppies with track 0 single density
+
+;-------------------------------
+
+biosptr	equ	0001h		; Warm boot vector pointer
+bdos	equ	0005h		; BDOS system entry point
+
+		; BDOS Function numbers
+
+f$conio		equ 6	; Direct console I/O
+f$print		equ 9	; Print string on console
+f$version	equ 12	; Return version number
+f$resetdisks	equ 13	; Reset disk system
+f$selectdisk	equ 14	; Select disk
+f$getdpb	equ 31	; Get address of disk parameter block
+f$seterrormode	equ 45	; Set BDOS error mode
+f$getscb	equ 49	; Get/Set System Control Block
+f$callbios	equ 50	; Direct BIOS call
+
+		; BIOS function numbers
+
+io_wboot	equ 1	; BIOS Warm boot
+io_seldsk	equ 9	; BIOS Select disk
+io_settrk	equ 10	; BIOS Set track
+io_setsec	equ 11	; BIOS Set sector
+io_setdma	equ 12	; BIOS Set DMA
+io_read		equ 13	; BIOS Read sector
+io_write	equ 14	; BIOS Write sector
+io_sectrn	equ 16	; BIOS Sector translation
+io_drvtbl	equ 22	; BIOS Get drive table address
+io_move		equ 25	; BIOS Memory-to-Memory block move
+io_xmove	equ 29	; BIOS Set banks for following move
+
+		; Offsets from warm boot BIOS vector
+
+ofs_drvtbl	equ (io_drvtbl-io_wboot)*3
+ofs_move	equ (io_move-io_wboot)*3
+ofs_xmove	equ (io_xmove-io_wboot)*3
+
+ERROR	equ	0FFh
+
+dfcb1	equ	005Ch		; Default File Control Block 1
+dfcb2	equ	006Ch		; Default File Control Block 2
+
+cr	equ	0Dh
+lf	equ	0Ah
+noparity equ	7Fh
+
+;-------------------------------
+
+start::
+	ld	(stack),sp	; Switch to local stack
+	ld	sp,stack
+
+	call	checkversion
+	call	getdrives
+	call	checkdisks
+	call	copydisks
+exit::
+	ld	c,f$resetdisks	; Reset disk system
+	call	bdos
+
+	ld	sp,(stack)	; Restore stack and
+	ret			;  return to CP/M
+
+;-------------------------------
+
+checkversion::
+	ld	c,f$version	; Check to see if this
+	call	bdos		;  is CP/M Plus
+	ld	l,a
+	cp	31h
+	jr	c,wrongvers
+	ld	c,f$getscb	; OK, see if this is
+	ld	de,scbpb	;  a banked or non-banked
+	call	bdos		;  system.
+	ld	a,h		; (Non-banked has zero
+	or	l		;  common memory base
+	jr	z,bank0		;  address)
+	ld	a,1		; TPA is bank 1
+	jr	stbank
+bank0::
+	xor	a		; TPA is bank 0
+stbank::
+	ld	(bank),a
+	ret
+
+wrongvers::
+	ld	de,versmsg	; Tell them the bad news
+abort::
+	call	printm
+	jr	exit
+
+versmsg::
+	defb	'?DISKCOPY Requires CP/M Plus$'
+
+scbpb::
+	defb	05Dh		;Get SCB parameter block
+	defb	0		; to fetch common memory
+	defw	0		; base address (CP/M Plus)
+
+;-------------------------------
+
+getdrives::
+	ld	a,(dfcb1)	; get source drive
+	or	a
+	jr	z,nosrcdrv
+	dec	a
+	ld	(srcdrv),a
+	add	a,'A'
+	ld	(srcnam),a
+	ld	a,(dfcb2)	; get destination drive
+	or	a
+	jr	z,nodstdrv
+	dec	a
+	ld	(dstdrv),a
+	add	a,'A'
+	ld	(dstnam),a
+
+mount::
+	ld	de,mountmsg	; request mount of disks
+	call	printm
+
+	call	getchar		; RETURN proceeds with
+	push	af		;  the copy, anything
+	ld	de,crlfmsg	;  else aborts
+	call	printm
+	pop	af
+	cp	cr
+	jp	nz,exit
+
+	ret
+
+nosrcdrv::
+	ld	de,srcprmpt	; Prompt for source
+	call	printm		;  drive
+	call	getdrname
+	jr	c,badresp
+	ld	(srcdrv),a
+	add	a,'A'
+	ld	(srcnam),a
+	call	putchar
+
+nodstdrv::
+	ld	de,dstprmpt	; Prompt for destination
+	call	printm		;  drive
+	call	getdrname
+	jr	c,badresp
+	ld	(dstdrv),a
+	add	a,'A'
+	ld	(dstnam),a
+	call	putchar
+	ld	de,crlfmsg
+	call	printm
+	jr	mount
+
+badresp::
+	ld	de,helpmsg	; Bad response, display
+	jp	abort		;  help message and abort
+
+getdrname::
+	call	getchar		; Get Drive letter
+	cp	'a'		;  and check it is
+	jr	c,upcase	;  in range 'A'..'P'
+	sub	20h
+upcase::
+	cp	'A'
+	ret	c
+	sub	'A'
+	cp	16
+	ccf
+	ret
+
+srcprmpt::
+	defb	'     SOURCE drive : $'
+
+dstprmpt::
+	defb	cr,lf
+	defb	'DESTINATION drive : $'
+
+helpmsg::
+	defb	cr,lf
+	defb	'DISKCOPY - CP/M-Plus disk copy program',cr,lf
+	defb	'usage -',cr,lf
+	defb	'	DISKCOPY s: d:',cr,lf
+	defb	'where -',cr,lf
+	defb	'	s: is the source disk',cr,lf
+	defb	' and	d: is the destination disk'
+crlfmsg::
+	defb	cr,lf
+	defb	'$'
+
+mountmsg::
+	defb	cr,lf
+	defb	'Place SOURCE disk in drive '
+srcnam::
+	defb	'd:',cr,lf
+	defb	' DESTINATION disk in drive '
+dstnam::
+	defb	'd:',cr,lf
+	defb	'and press RETURN when ready$'
+
+;-------------------------------
+
+checkdisks::
+	ld	e,0FEh		; Set BDOS error mode
+	ld	c,f$seterrormode;  to return and display
+	call	bdos
+
+	ld	c,f$resetdisks	; Reset disk system
+	call	bdos
+
+	ld	a,(srcdrv)	; Select source disk
+	ld	e,a
+	ld	c,f$selectdisk
+	call	bdos
+	cp	ERROR
+	jp	z,exit
+
+	ld	c,f$getdpb	; Get pointer to
+	call	bdos		;  disk parameter block
+	ld	(srcdpb),hl
+
+	ld	a,(dstdrv)	; Select destination disk
+	ld	e,a
+	ld	c,f$selectdisk
+	call	bdos
+	cp	ERROR
+	jp	z,exit
+
+	ld	c,f$getdpb	; Get pointer to disk
+	call	bdos		;  parameter block
+	ld	(dstdpb),hl
+
+	ex	de,hl
+	ld	hl,(srcdpb)	; Do the disks have the
+	or	a		;  same disk parameter
+	sbc	hl,de		;  block?
+	jr	z,samedpb
+
+	ld	de,notsamemsg	; No, they must be
+	jp	abort		;  different formats
+
+samedpb::
+	push	de		; Point IX at disk parameter block
+	pop	ix
+
+	ld	e,(ix)		; Get number of logical 128
+	ld	d,(ix+1)	;  byte sectors per track to DE,
+	ld	b,(ix+15)	;  physical record shift factor to B
+
+	ld	hl,128		; Compute sector size and
+	ld	a,b		;  number of physical sectors
+	or	a		;  per track
+	jr	z,store1
+
+loop1::
+	srl	d
+	rr	e
+	add	hl,hl
+	djnz	loop1
+
+store1::
+	ld	(secsize),hl
+	ld	(spt),de
+
+	ld	a,(ix+2)	; Now get the number of
+	sub	(ix+15)		;  sectors per block
+	ld	b,a
+	ld	a,1
+loop2::
+	sla	a
+	djnz	loop2
+
+	ld	e,(ix+5)	; Get disk capacity in blocks
+	ld	d,(ix+6)
+	inc	de
+	push	de
+	pop	hl
+
+loop3::
+	dec	a		; Convert to physical
+	jr	z,cont3		;  sector capacity
+	add	hl,de
+	jr	loop3
+
+cont3::
+	ex	de,hl		; Now divide by sectors per
+	ld	a,(spt)		;  track to get the approximate
+	call	divide		;  number of tracks
+	ld	a,d		; Round up if there is
+	or	a		;  a non-zero remainder
+	jr	z,cont4
+	inc	e
+cont4::
+	ld	a,e
+	add	a,(ix+13)	; Add number of reserved tracks
+	ld	(tracks),a
+
+	ret
+
+notsamemsg::
+	defb	'?Source and Destination disk media not the same format.',cr,lf
+	defb	'$'
+
+;-------------------------------
+
+copydisks::
+	ld	de,msg1		; Announce what we're about
+	call	printm		;  to start copying
+	ld	hl,(secsize)
+	call	pdec
+	ld	de,msg2
+	call	printm
+	ld	hl,(spt)
+	call	pdec
+	ld	de,msg3
+	call	printm
+	ld	a,(tracks)
+	ld	h,0
+	ld	l,a
+	call	pdec
+	ld	de,msg4
+	call	printm
+
+	ld	a,0		; Initialise current track
+	ld	(curtrk),a
+	ld	(srcselhint),a	;  and initial drive
+	ld	(dstselhint),a	;  selection hints
+nexttrk::
+	call	copytrack	; Copy a track
+
+	ld	hl,curtrk	; Increment current track
+	inc	(hl)
+	ld	a,(tracks)	; All done yet?
+	cp	(hl)
+	jr	nz,nexttrk	; No, do next track
+
+	ld	de,crlfmsg	; Finished
+	call	printm
+	ret
+
+msg1::
+	defb	cr,lf
+	defb	'Copying $'
+msg2::
+	defb	' byte $'
+msg3::
+	defb	' sectors $'
+msg4::
+	defb	' tracks',cr,lf
+	defb	cr,lf
+	defb	'$'
+
+;-------------------------------
+
+copytrack::
+	ld	de,trkmsg	; Display current track number
+	call	printm
+	ld	a,(curtrk)
+	ld	h,0
+	ld	l,a
+	call	pdec
+
+  if trk0sd
+	ld	a,(curtrk)	; Test for track zero
+	or	a
+  endif
+
+	ld	a,(spt)		; Fetch sectors per track
+	ld	hl,(secsize)	;  and sector size
+
+  if trk0sd
+	jr	nz,read0
+	ld	a,26		; Track zero is single
+	ld	hl,128		;  density 128 byte sectors
+  endif
+
+read0::
+	ld	(numsecs),a	; Store current number of sectors
+	ld	(cursize),hl	;  per track and their size
+	ld	a,0
+	ld	(cursec),a	; Start a sector zero
+	ld	hl,trkbuf	; Point to start of track buffer
+read1::
+	push	hl		; Save buffer address
+
+	ld	hl,srcselhint
+	ld	a,(hl)		; Get selection hint
+	ld	(hl),1		;  and reset it
+	or	a		; Test if zero, saving
+	push	af		;  flags on stack
+	ld	e,a
+	ld	a,(srcdrv)	; Call BIOS to select
+	ld	c,a		;  source disk
+	call	bios
+	defb	io_seldsk
+	pop	af		; Was this the first selection?
+	jr	nz,not1st	; No, continue
+
+				; Yes, save the disk parameter
+	call	getxlt		;  header pointer and get the
+	ld	a,d		;  sector translation table
+	or	e		;  address.  If zero, no
+	ld	(skew),a	;  sector skew is to be used
+
+not1st::
+	pop	bc		; Set DMA Address
+	push	bc
+	call	bios
+	defb	io_setdma
+
+	ld	a,(curtrk)	; Set track
+	ld	b,0
+	ld	c,a
+	call	bios
+	defb	io_settrk
+
+	ld	a,(cursec)	; Get sector
+	ld	b,0
+	ld	c,a
+	call	sectrans	; Translate to physical
+	call	bios		; Set sector
+	defb	io_setsec
+
+	call	bios		; Read sector
+	defb	io_read
+	or	a		; Any errors?
+	jp	nz,rderror	; Yes
+
+	pop	de		; Restore buffer address
+	ld	hl,cursec	; Increment sector number
+	inc	(hl)
+	ld	a,(numsecs)	; Have we read whole track?
+	cp	(hl)
+	jr	z,write0	; Yes, go write it
+	ld	hl,(cursize)	; No, move buffer pointer
+	add	hl,de		;  along a sector and
+	jr	read1		;  go read next sector
+
+write0::
+	ld	a,0		; Reset sector number
+	ld	(cursec),a	;  and point to start
+	ld	hl,trkbuf	;  of track buffer
+write1::
+	push	hl		; Save buffer address
+
+	ld	a,(dstdrv)	; Call BIOS to select
+	ld	c,a		;  destination disk
+	ld	hl,dstselhint
+	ld	e,(hl)
+	ld	(hl),1
+	call	bios
+	defb	io_seldsk
+
+	pop	bc		; Set DMA Address
+	push	bc
+	call	bios
+	defb	io_setdma
+
+	ld	a,(curtrk)	; Set track
+	ld	b,0
+	ld	c,a
+	call	bios
+	defb	io_settrk
+
+	ld	a,(cursec)	; Get sector
+	ld	b,0
+	ld	c,a
+	call	sectrans	; Translate to physical
+	call	bios		; Set sector
+	defb	io_setsec
+
+	call	bios		; Write sector
+	defb	io_write
+	or	a		; Any errors?
+	jp	nz,wrerror
+
+	pop	de		; Restore buffer address
+	ld	hl,cursec	; Increment sector number
+	inc	(hl)
+	ld	a,(numsecs)	; Have we written whole track?
+	cp	(hl)
+	jr	z,trackdone	; Yes
+	ld	hl,(cursize)	; No, move buffer pointer
+	add	hl,de		;  along a sector and
+	jr	write1		;  go write next sector
+
+trackdone::
+	ret
+
+rderror::
+	ld	de,rdermsg	; Print 'Read'
+	jr	secerror
+
+wrerror:
+	ld	de,wrermsg	; Print 'Write'
+secerror::
+	call	printm		; Print ' error - Sector '
+	ld	de,errormsg
+	call	printm
+	ld	a,(cursec)	; Get sector
+	ld	c,a
+	ld	b,0
+	call	sectrans	; Translate
+	ld	h,b
+	ld	l,c
+	call	pdec
+	ld	de,crlfmsg
+	jp	abort		; Abort
+
+trkmsg::
+	defb	'   ',cr,'Track $'
+
+rdermsg::
+	defb	' Read$'
+
+wrermsg::
+	defb	' Write$'
+
+errormsg::
+	defb	' error - Sector $'
+
+;-------------------------------
+
+sectrans::
+	ld	a,(skew)	; Return if no software
+	or	a		;  skew on this disk
+	ret	z
+	ld	a,(numsecs)	; Select one of the
+	ld	de,xlt26	;  translation tables
+	cp	26
+	jr	z,translate
+	ld	de,xlt15
+	cp	15
+	jr	z,translate
+	ld	de,xlt08
+	cp	8
+	jr	z,translate
+	ret			; Return if no table
+
+translate::
+	ld	l,c		; Extract entry for this
+	ld	h,b		;  sector from the table
+	add	hl,de		;  pointed at by DE
+	ld	c,(hl)
+	ret
+
+xlt26::
+	defb	0,2,4,6,8,10,12,14,16,18,20,22,24
+	defb	1,3,5,7,9,11,13,15,17,19,21,23,25
+
+xlt15::
+	defb	0,2,4,6,8,10,12,14
+	defb	1,3,5,7,9,11,13
+
+xlt08::
+	defb	0,2,4,6,1,3,5,7
+
+;-------------------------------
+
+bios::
+	ld	(areg),a	; Store register values
+	ld	(bcreg),bc
+	ld	(dereg),de
+	ld	(hlreg),hl
+	pop	hl		; Now get function number
+	ld	a,(hl)		;  parameter and
+	inc	hl		;  advance return
+	push	hl		;  address
+	ld	(func),a
+	ld	c,f$callbios	; Call the BIOS routine
+	ld	de,biospb
+	jp	bdos
+
+biospb::
+func::			; BIOS function number
+	defs	1
+areg::			; A register contents
+	defs	1
+bcreg::			; BC register contents
+	defs	2
+dereg::			; DE register contents
+	defs	2
+hlreg::			; HL register contents
+	defs	2
+
+;-------------------------------
+
+getxlt::
+	ld	hl,(biosptr)	; The BDOS direct BIOS
+	ld	de,ofs_drvtbl	;  call (function 50) does
+	add	hl,de		;  not return the HL register
+	ld	(drvtbl_addr),hl;  contents, so we have to
+	ld	e,ofs_move-ofs_drvtbl	;  do direct calls
+	add	hl,de		;  to determine the sector
+	ld	(move_addr),hl	;  translation of the source
+	ld	e,ofs_xmove-ofs_move	; disk
+	add	hl,de
+	ld	(xmove_addr),hl
+
+	call	biosptr		; Get Drive table address
+drvtbl_addr equ $-2
+	ld	a,(srcdrv)	; Now index to fetch the
+	add	a,a  		;  disk parameter header
+	ld	e,a  		;  address.  The Drive table
+	ld	d,0  		;  is in common memory, so
+	add	hl,de		;  we have access to it
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a		; DPH address now in HL
+
+	ld	a,(bank)	; If non-banked system
+	or	a		;  then easy fetch
+	jr	z,easyget
+
+	push	hl
+	ld	b,a		; Call BIOS XMOVE routine
+	ld	c,0		;  Source bank 0, destination
+	call	biosptr		;  bank 1 (TPA)
+xmove_addr equ $-2
+	
+	pop	de		; Source address in bank 0
+	ld	hl,trkbuf	; Destination address in TPA bank
+	ld	bc,2		; Byte count
+	call	biosptr		; Call BIOS MOVE routine
+move_addr equ $-2
+
+	ld	hl,trkbuf
+
+easyget::
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ret
+
+;-------------------------------
+
+pdec::
+		; print binary number 0-65535 from <HL>
+
+	ld	bc,-10		; get some useful constants
+pdec1::
+	ld	de,-1
+pdec2::
+	add	hl,bc		; subtract as many 10s as possible
+	inc	de		; count them
+	jr	c,pdec2		; if some left, keep going
+	push	hl		; save remainder-10
+	ex	de,hl		; swap the remainder and quotient
+	ld	a,h		; get the number of 10s found
+	or	L		; check quotient for non-zero
+	call	nz,pdec1	; if non-zero, recurse
+	pop	hl		; get the remainder-10
+	ld	a,L		; in A
+	add	a,'0'+10	; make the number printable and add the 10 back
+	push	bc
+	push	de
+	push	hl
+	ld	e,a		; print it on the console
+	ld	c,f$conio
+	call	bdos
+	pop	hl
+	pop	de
+	pop	bc
+	ret
+
+;-------------------------------
+
+divide::
+		; divide <DE> by <A>,
+		; returns quotient in <E>,
+		; and remainder in <D>
+
+	ld	c,a		; save divisor in C
+	ld	b,8		; loop counter
+	ld	a,d		; will use A and E 
+div1::
+	sla	e		; shift low order byte and
+	rla			; rotate carry into high byte
+	sub	c		; subtract divisor
+	jp	p,div2		; if result still positive
+	add	a,c		; add divisor and do next bit
+	jr	div3
+div2::
+	set	0,e		; set low quotient bit
+div3::
+	djnz	div1		; next bit
+	ld	d,a		; return results
+	ld	a,e
+	ret
+
+;-------------------------------
+
+printm::
+	ld	c,f$print
+	jp	bdos
+
+;-------------------------------
+
+getchar::
+	ld	e,0FFh		; Get a character without
+	ld	c,f$conio	;  echo from the console
+	call	bdos
+	and	noparity
+	jr	z,getchar
+	ret
+
+;-------------------------------
+
+putchar::
+	ld	e,a		; Output character to
+	ld	c,f$conio	;  console
+	jp	bdos
+
+;-------------------------------
+
+bank::
+	defs	1	; Current memory bank number
+srcdrv::
+	defs	1	; Source drive code
+srcdpb::
+	defs	2	; Source disk parameter block pointer
+dstdrv::
+	defs	1	; Destination drive code
+dstdpb::
+	defs	2	; Destination disk parameter block pointer
+secsize::
+	defs	2	; Sector size
+spt::
+	defs	2	; Sectors per track
+tracks::
+	defs	1	; Number of tracks
+curtrk::
+	defs	1	; Current track being copied
+cursec::
+	defs	1	; Current sector number
+cursize::
+	defs	2	; Current sector size
+numsecs::
+	defs	1	; Number of sectors on current track
+srcselhint::
+	defs	1	; Source disk selection hint
+dstselhint::
+	defs	1	; Destination disk selection hint
+skew::
+	defs	1	; Flag, non-zero to use skew table
+
+	defs	64	; Stack space
+stack::
+	defs	2	; Saved stack pointer
+
+trkbuf::
+			; Track buffer starts here
+
+	end	start

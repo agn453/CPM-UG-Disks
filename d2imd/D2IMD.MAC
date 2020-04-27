@@ -1,0 +1,1832 @@
+	title	D2IMD - CompuPro Disk1 to IMD File Imaging Utility
+	subttl	Version 1.3 08-Aug-2008
+d2imdv	equ	13
+;
+;  D 2 I M D
+;
+;  Copy an entire eight-inch floppy disk to a Dave Dunfield format
+;  (IMD) image file.  The format of the image file created by this
+;  program differs slightly from the format described in the IMD.TXT
+;  file from Dave Dunfield's IMD116.ZIP distribution in that an
+;  "end-of-file" CTRL-Z character is added at the end of the file.
+;  This is because under CP/M, files have a 128 byte record
+;  granularity.  Modified versions of IMDU and IMDV to recognise
+;  the CTRL-Z as end-of-file are needed to copy or view the image
+;  file created by this program.  Only Normal (no error) sector
+;  and so-called Compressed sector records for eight-inch FM and
+;  MFM formats are recognised.
+;
+;  Restrictions:
+;
+;  Only tested under Banked memory CP/M-Plus.  Full disks may not
+;  be able to written to an image file on the same-sized media when
+;  no "Compressed" sectors are detected.
+;
+;  MS-DOS IMD resources are at the following URL -
+;
+;	http://www.classiccmp.org/dunfield/img/index.htm
+;
+; *** Still to do:  Code to read an .IMD and write to physical media
+;
+;  This source file is written for the Microsoft M80 assembler.
+;  To produce a .COM file -
+;
+;	PIP CONFIG.LIB=CF-D2IMD.LIB
+;	M80 =D2IMD
+;	RMAC FDDISK1 $$PZ SZ
+;	ERA CONFIG.LIB
+;	LINK D2IMD=D2IMD,FDDISK1
+;
+;  Author:	Tony Nicholson
+;
+;  Modification History:
+;
+;	26-May-2007	Initial version morphed from DISKCOPY.MAC
+;			and uses an embedded copy of the FDDISK1
+;			CP/M-Plus BIOS module to perform physical
+;			disk I/O on a CompuPro DISK 1 controller
+;
+;	03-Aug-2008	Add support for Ferguson BigBoard-II
+;			1024 byte 9 sector per track format and
+;			capability to write output .IMD file
+;			split across disks (these will have to
+;			be concatenated later) 
+;
+;	08-Aug-2008	Option for filling unreadable sectors
+;			with 0xE5 bytes
+;
+
+	maclib	CONFIG.LIB
+
+	.z80
+
+false	equ	0
+true	equ	not false
+
+trk0sd	equ	true	; TRUE for 8" floppies with track 0 single density
+
+;-------------------------------
+
+warm	equ	0000h		; Warm boot
+bdos	equ	0005h		; BDOS system entry point
+
+		; BDOS Function numbers
+ç
+f$conio		equ 6	; Direct console I/O
+f$print		equ 9	; Print string on console
+f$readline	equ 10	; Read a line from console
+f$version	equ 12	; Return version number
+f$resetdisks	equ 13	; Reset disk system
+f$selectdisk	equ 14	; Select disk
+f$openfile	equ 15	; Open file
+f$closefile	equ 16	; Close file
+f$deletefile	equ 19	; Delete file
+f$writefile	equ 21	; Write file
+f$makefile	equ 22	; Make file
+f$setdma	equ 26	; Set DMA address
+f$getdpb	equ 31	; Get address of disk parameter block
+f$setmultisec	equ 44	; Set multisector count
+f$seterrormode	equ 45	; Set BDOS error mode
+f$getfreespace	equ 46	; Get disk free space
+f$getscb	equ 49	; Get/Set System Control Block
+f$parsefilename	equ 152 ; Parse filename into file control block
+
+ERROR	equ	0FFh
+
+dfcb1	equ	005Ch		; Default File Control Block 1
+dfcb2	equ	006Ch		; Default File Control Block 2
+ddma	equ	0080h		; Default DMA address
+
+cr	equ	0Dh
+lf	equ	0Ah
+ctrlz	equ	1Ah
+quote	equ	27h
+noparity equ	7Fh
+
+  if disk1$bb2$read9
+dskd7	equ	8	; Disk-type for BigBoard-II SSDD-1024-9
+dskd8	equ	9	; Disk-type for BigBoard-II DSDD-1024-9
+  endif
+;-------------------------------
+
+	cseg
+start::
+	jp	d2imd
+
+announcemsg::
+	defb	'D2IMD V'
+	defb	(d2imdv / 10)+'0','.',(d2imdv mod 10)+'0'
+	defb	' - CP/M-Plus copy disk to IMD format image file'
+	defb	cr,lf,'$',ctrlz
+
+d2imd::	ld	(stack),sp	; Switch to local stack
+	ld	sp,stack
+
+	ld	de,announcemsg
+	call	printm
+	call	checkversion
+	call	getdrives
+	call	checkdisks
+	call	copydisks
+
+?wboot::
+exit::
+	ld	c,f$resetdisks	; Reset disk system
+	call	bdos
+
+	ld	sp,(stack)	; Restore stack and
+	jp	warm		;  return to CP/M
+
+;-------------------------------
+
+	cseg
+checkversion::
+	ld	c,f$version	; Check to see if this
+	call	bdos		;  is CP/M Plus
+	ld	l,a
+	cp	31h
+	jr	c,wrongvers
+	ld	c,f$getscb	; OK, see if this is
+	ld	de,scbpb	;  a banked or non-banked
+	call	bdos		;  system.
+	ld	a,h		; (Non-banked has zero
+	or	l		;  common memory base
+	jr	z,bank0		;  address)
+	ld	a,1		; TPA is bank 1
+	jr	stbank
+bank0:
+	xor	a		; TPA is bank 0
+stbank:
+	ld	(@cbnk),a	; Make sure current and dma
+	ld	(@dbnk),a	;  are set to TPA bank
+	ld	(bank),a
+	ret
+
+wrongvers::
+	ld	de,versmsg	; Tell them the bad news
+
+abort::
+	call	printerr
+	jr	exit
+
+undef::
+	ld	de,undefmsg
+	jr	abort
+
+	dseg
+versmsg::
+	defb	'Requires CP/M Plus$'
+
+undefmsg::
+	defb	'Source drive is not a floppy disk$'
+
+scbpb::
+	defb	05Dh		;Get SCB parameter block
+	defb	0		; to fetch common memory
+	defw	0		; base address (CP/M Plus)
+
+;-------------------------------
+
+	cseg
+getdrives::
+	ld	a,(dfcb1)	; get source drive
+	or	a
+	jp	z,nosrcdrv
+	dec	a
+	ld	(srcdrv),a
+	add	a,'A'
+	ld	(srcnam),a
+	ld	a,(dfcb2)	; get destination image filename
+	or	a
+	jp	z,nodstdrv	; if not specified on command line
+	dec	a
+	ld	(dstdrv),a
+	add	a,'A'
+	ld	(dstnam),a
+	ld	(msgfname),a
+
+	ld	c,16		; copy first 16 bytes of
+	ld	de,dfcb2	;  image filename file control
+	ld	hl,imdfcb	;  block to local fcb for .imd file
+mfcb:	ld	a,(de)
+	inc	de
+	ld	(hl),a
+	inc	hl
+	dec	c
+	jr	nz,mfcb
+
+mount::
+	xor	a		; zero .imd file control block
+	ld	(imdfcr),a	;  current record
+	ld	(imdfex),a	;  and extent fields
+
+	ld	de,mountmsg	; request mount of disks
+	call	printm
+
+	ld	hl,imdfnam
+	ld	a,(hl)		; Is image filename non-blank?
+	cp	' '
+	jr	z,mount0	
+
+	ld	de,msgfname+2	; Get image filename to print
+	ld	b,8
+mf0:	ld	a,(hl)		; filename part
+	cp	' '
+	jr	z,mf1
+	ld	(de),a
+	inc	hl
+	inc	de
+	djnz	mf0
+mf1:	ld	a,'.'
+	ld	(de),a
+	inc	de
+	ld	b,3
+	ld	hl,imdftyp	; filetype
+mf2:	ld	a,(hl)
+	cp	' '
+	jr	z,mf3
+	ld	(de),a
+	inc	hl
+	inc	de
+	djnz	mf2
+mf3:	ld	a,' '
+	ld	(de),a
+	inc	de
+	ld	a,'$'
+	ld	(de),a
+	ld	de,mntimsg	; Print image filename
+	call	printm
+
+mount0:
+	ld	de,mntdmsg
+	call	printm
+	call	getchar		; RETURN proceeds with
+	push	af		;  the copy, anything
+	ld	de,crlfmsg	;  else aborts
+	call	printm
+	pop	af
+	cp	cr
+	jp	nz,exit
+
+	ret
+
+nosrcdrv::
+	ld	de,srcprmpt	; Prompt for source
+	call	printm		;  drive
+	call	getdrname
+	jr	c,badresp
+	ld	(srcdrv),a
+	add	a,'A'
+	ld	(srcnam),a
+	call	putchar
+
+nodstdrv::
+	ld	de,dstprmpt	; Prompt for destination
+	call	printm		;  image filename
+	call	getimdfilename
+	jr	c,badresp
+
+	ld	(dstdrv),a
+	add	a,'A'
+	ld	(dstnam),a
+	ld	(msgfname),a
+	ld	de,crlfmsg
+	call	printm
+	jp	mount
+
+badresp::
+	ld	de,helpmsg	; Bad response, display
+	call	printm		;  help message and abort
+	jp	exit
+
+;-------------------------------
+
+	cseg
+getdrname::
+	call	getchar		; Get Drive letter
+	cp	'a'		;  and check it is
+	jr	c,upcase	;  in range 'A'..'P'
+	sub	20h
+upcase:	cp	'A'
+	ret	c
+	sub	'A'
+	cp	'P'-'A'
+	ccf
+	ret
+
+;-------------------------------
+
+	cseg
+getimdfilename::
+	ld	hl,consbuf	; Copy default filename string
+	ld	de,ddma		;  to default dma buffer
+	ld	bc,consbuflen
+	ldir
+
+	ld	de,ddma		; Set DMA to default area
+	ld	c,f$setdma
+	call	bdos
+	ld	c,f$readline	; Get image filename string
+	ld	de,0		;  into dma buffer area
+	call	bdos
+
+	ld	hl,ddma+1	; Check how many characters
+	ld	a,(hl)		;  were input
+	cp	01
+	ret	c		; None - return carry set
+
+	inc	hl
+	ld	(parseimdf),hl
+	ld	c,f$parsefilename ; parse filename into imdfcb
+	ld	de,parseimdf
+	call	bdos
+
+	ld	a,(imdfdrv)	; Result is destination file drive
+	dec	a		;  where 0=A:, 1=B: etc
+	or	a		; Success - clear carry
+	ret
+
+	dseg
+srcprmpt::
+	defb	'     SOURCE drive : $'
+
+dstprmpt::
+	defb	cr,lf
+	defb	'DESTINATION image filename : $'
+
+consbuf::
+	defb	consbuflen
+conscount::
+	defb	14
+consfnam::
+	defb	'B:DISKFILE.IMD',0
+	defb	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	defb	0
+consbuflen equ	$-consfnam
+
+parseimdf:
+	defw	ddma+2		; points to filename string
+	defw	imdfcb		; file control block
+
+helpmsg::
+	defb	cr,lf
+	defb	'usage -',cr,lf
+	defb	'	D2IMD s: d:filename.imd',cr,lf
+	defb	'where -',cr,lf
+	defb	'	s: is the source disk',cr,lf
+	defb	' and	d:filename.imd is the destination disk image file'
+	defb	cr,lf,cr,lf
+	defb	'If the filename is omitted, a disk-to-disk copy is performed.'
+
+crlfmsg::
+	defb	cr,lf
+	defb	'$'
+
+mountmsg::
+	defb	cr,lf
+	defb	'Place SOURCE disk in drive '
+srcnam::
+	defb	'd:',cr,lf
+	defb	' DESTINATION disk $'
+mntimsg::
+	defb	'for image file '
+msgfname::
+	defb	'B:filename.imd $'
+mntdmsg::
+	defb	'in drive '
+dstnam::
+	defb	'd:',cr,lf
+	defb	'and press RETURN when ready$'
+
+;-------------------------------
+
+	cseg
+checkdisks::
+	ld	a,(srcdrv)	; Are source and destination
+	ld	b,a		;  disks the same?
+	ld	a,(dstdrv)
+	cp	b
+	jr	nz,chkdiff	; No - continue
+
+sameerr::
+	ld	de,samemsg	; Yes - error exit
+	jp	abort
+
+chkdiff:
+	ld	e,0FEh		; Set BDOS error mode
+	ld	c,f$seterrormode;  to return and display
+	call	bdos
+
+	ld	c,f$resetdisks	; Reset disk system
+	call	bdos
+
+	ld	a,(srcdrv)	; Select source disk
+	ld	e,a
+	ld	c,f$selectdisk
+	call	bdos
+	cp	ERROR
+	jp	z,exit
+
+	ld	c,f$getdpb	; Get pointer to
+	call	bdos		;  disk parameter block
+	ld	(srcdpb),hl
+
+	ld	a,(imdfnam)	; Is destination a file?
+	cp	' '
+	jr	z,todisk	; No, do disk-to-disk
+
+	ld	(dstdpb),hl	; Yes, flag as same type
+	ld	d,h
+	ld	e,l	
+	jr	samedpb
+
+todisk:	ld	a,(dstdrv)	; Select destination disk
+	ld	e,a
+	ld	c,f$selectdisk
+	call	bdos
+	cp	ERROR
+	jp	z,exit
+
+	ld	c,f$getdpb	; Get pointer to disk
+	call	bdos		;  parameter block
+	ld	(dstdpb),hl
+
+	ex	de,hl
+	ld	hl,(srcdpb)	; Do the disks have the
+	or	a		;  same disk parameter
+	sbc	hl,de		;  block?
+	jr	z,samedpb
+
+	ld	de,notsamemsg	; No, they must be
+	jp	abort		;  different formats
+
+samedpb:
+	push	de		; Point IX at disk parameter block
+	pop	ix
+
+	ld	e,(ix)		; Get number of logical 128
+	ld	d,(ix+1)	;  byte sectors per track to DE,
+	ld	b,(ix+15)	;  physical record shift factor to B
+
+	ld	hl,128		; Compute sector size and
+	ld	a,b		;  number of physical sectors
+	or	a		;  per track
+	jr	z,store1
+
+loop1:	srl	d
+	rr	e
+	add	hl,hl
+	djnz	loop1
+
+store1:	ld	(secsize),hl
+	ld	(spt),de
+
+	ld	a,(ix+2)	; Now get the number of
+	sub	(ix+15)		;  sectors per block
+	ld	b,a
+	ld	a,1
+
+loop2:	sla	a
+	djnz	loop2
+
+	ld	e,(ix+5)	; Get disk capacity in blocks
+	ld	d,(ix+6)
+	inc	de
+	push	de
+	pop	hl
+
+loop3:	dec	a		; Convert to physical
+	jr	z,cont3		;  sector capacity
+	add	hl,de
+	jr	loop3
+
+cont3:	ex	de,hl		; Now divide by sectors per
+	ld	a,(spt)		;  track to get the approximate
+	call	divide		;  number of tracks
+	ld	a,d		; Round up if there is
+	or	a		;  a non-zero remainder
+	jr	z,cont4
+	inc	e
+
+cont4:	ld	a,e
+	add	a,(ix+13)	; Add number of reserved tracks
+	ld	(tracks),a
+
+	ld	e,0
+	cp	80+1		; If more than 80 tracks, Sides = 1
+	jr	c,cont5
+	inc	e
+cont5:	ld	a,e
+	ld	(sides),a
+	ret
+
+	dseg
+samemsg::
+	defb	'Cannot copy when source and destination are same drive.$'
+
+notsamemsg::
+	defb	'Source and Destination disk media not the same format.$'
+
+;-------------------------------
+
+	cseg
+copydisks::
+	ld	de,msg1		; Announce what we're about
+	call	printm		;  to start copying
+	ld	hl,(secsize)
+	call	pdec
+	ld	de,msg2
+	call	printm
+	ld	hl,(spt)
+	call	pdec
+	ld	de,msg3
+	call	printm
+	ld	a,(tracks)
+	ld	h,0
+	ld	l,a
+	call	pdec
+	ld	de,msg4
+	call	printm
+
+	xor	a		; Initialise current track
+	ld	(curtrk),a
+	ld	(srcselhint),a	;  and initial drive
+	ld	(dstselhint),a	;  selection hints
+
+	ld	a,(imdfnam)	; Is output to image file?
+	cp	' '
+	jr	z,nexttrk	; No
+
+	call	openout		; Yes, open output file
+
+	call	headerout	; Write image file header
+
+nexttrk::
+	call	copytrack	; Copy a track
+
+	ld	hl,curtrk	; Increment current track
+	inc	(hl)
+	ld	a,(tracks)	; All done yet?
+	cp	(hl)
+	jr	nz,nexttrk	; No, do next track
+
+	ld	a,(imdfnam)	; Are we writing an image file?
+	cp	' '
+
+	call	nz,closeout
+
+alldone::
+	ld	de,crlfmsg	; Finished
+	call	printm
+	ret
+
+	dseg
+msg1::
+	defb	cr,lf
+	defb	'Copying $'
+msg2::
+	defb	' byte $'
+msg3::
+	defb	' sectors $'
+msg4::
+	defb	' tracks',cr,lf
+	defb	cr,lf
+	defb	'$'
+
+freeerr::
+	defb	'Unable to get output drive freespace.$'
+
+createrr::
+	defb	'Cannot create output image file.$'
+
+closeerr::
+	defb	'Error closing image file.$'
+
+;-------------------------------
+
+	cseg
+copytrack::
+	ld	de,trkmsg	; Display current track number
+	call	printm
+	ld	a,(curtrk)
+	ld	h,0
+	ld	l,a
+	call	pdec
+
+  if trk0sd
+	ld	a,(curtrk)	; Test for track zero
+	or	a
+  endif
+
+	ld	a,(spt)		; Fetch sectors per track
+	ld	hl,(secsize)	;  and sector size
+
+  if trk0sd
+	jr	nz,read0
+	ld	a,26		; Track zero is single
+	ld	hl,128		;  density 128 byte sectors
+  endif
+
+read0:	ld	(numsecs),a	; Store current number of sectors
+	ld	(cursize),hl	;  per track and their size
+	xor	a
+	ld	(cursec),a	; Start a sector zero
+
+	ld	hl,trkbuf	; Point to start of track buffer
+
+read1:	push	hl		; Save buffer address
+
+	ld	hl,srcselhint
+	ld	a,(hl)		; Get selection hint
+	ld	(hl),1		;  and reset it
+	or	a		; Test if zero, saving
+	push	af		;  flags on stack
+	ld	e,a
+	ld	a,(srcdrv)	; Call BIOS to select
+	ld	c,a		;  source disk
+	call	seldsk
+	pop	af		; Was this the first selection?
+	jr	nz,not1br	; No, continue
+
+	ld	a,(bank)	; Is this a banked system?
+	or	a
+	jr	z,not1br	; No
+
+	call	setbnk		; Yes, select TPA bank
+
+not1br:	pop	bc		; Set DMA Address
+	push	bc
+	call	setdma
+
+	ld	a,(curtrk)	; Set track
+	ld	b,0
+	ld	c,a
+	call	settrk
+
+	ld	a,(cursec)	; Get sector
+	ld	b,0
+	ld	c,a
+	call	sectrans	; Translate to fast read skew
+
+	call	setsec		; Set sector
+
+	call	read		; Read sector
+	or	a		; Any errors?
+	call	nz,rdfill	; Yes, ask if we fill it with E5's
+	or	a		; Did they decline?
+	jp	nz,rderror	; Yes, abort
+
+	pop	de		; Restore buffer address
+	ld	hl,cursec	; Increment sector number
+	inc	(hl)
+	ld	a,(numsecs)	; Have we read whole track?
+	cp	(hl)
+	jr	z,write0	; Yes, go write it
+	ld	hl,(cursize)	; No, move buffer pointer
+	add	hl,de		;  along a sector and
+	jp	read1		;  go read next sector
+
+write0:	xor	a		; Reset sector number
+	ld	(cursec),a	;  and point to start
+
+	ld	a,(imdfnam)	; Image file or disk?
+	cp	' '
+	jr	nz,wrimage
+
+	ld	hl,trkbuf	;  of track buffer
+
+write1:	push	hl		; Save buffer address
+
+	ld	a,(dstdrv)	; Select
+	ld	c,a		;  destination disk
+	ld	hl,dstselhint
+	ld	e,(hl)
+	ld	(hl),1
+	call	seldsk
+
+	ld	a,(bank)	; Is this a banked system?
+	or	a
+	jr	z,not1bw	; No
+
+	call	setbnk		; Yes, select TPA bank
+
+not1bw:	pop	bc		; Set DMA Address
+	push	bc
+	call	setdma
+
+	ld	a,(curtrk)	; Set track
+	ld	b,0
+	ld	c,a
+	call	settrk
+
+	ld	a,(cursec)	; Get sector
+	ld	b,0
+	ld	c,a
+	call	sectrans	; Translate to fast skew
+
+	call	setsec
+
+	call	write		; Write sector
+	or	a		; Any errors?
+	jp	nz,wrerror
+
+	pop	de		; Restore buffer address
+	ld	hl,cursec	; Increment sector number
+	inc	(hl)
+	ld	a,(numsecs)	; Have we written whole track?
+	cp	(hl)
+	jr	z,trackdone	; Yes, track done
+	ld	hl,(cursize)	; No, advance buffer pointer
+	add	hl,de		;  a sector and
+	jr	write1		;  go write next sector
+
+trackdone:
+	ret
+
+wrimage::
+	call	wrtrkhdr	; Write track header
+
+csz0:	ld	hl,(cursize)	; Calculate multi-sector
+	ld	de,128		;  count (number of 128
+	ld	c,1		;  byte logical sectors
+csz1:	or	a		;  per physical sector)
+	sbc	hl,de
+	jr	z,csz2
+	inc	c
+	jr	csz1
+csz2:	ld	a,c
+	ld	(logcnt),a
+
+wrinext::
+	ld	a,(cursec)	; Get sector
+	ld	b,0
+	ld	c,a
+
+	call	lookupsec	; Lookup translation table
+	ld	de,(cursize)	;  for this sector
+
+	ld	hl,trkbuf	; Calculate address of
+wrlog1:	ld	a,c		;  physical sector in buffer
+	or	a
+	jr	z,wrlog2
+	add	hl,de
+	dec	c
+	jr	wrlog1
+
+wrlog2:	call	chkcompress	; If all bytes same, output it
+	jr	c,wrlog4	;  then next
+
+	ld	a,(logcnt)	; Write logcnt logical sectors
+
+wrlog3:
+	ld	de,ddma		; copy logical sector to
+	ld	bc,128		;  default dma buffer
+	ldir
+
+	push	af		; save count
+	push	hl		; save buf pointer
+	
+	ld	b,128		; Number of bytes to write
+	ld	de,ddma		; Pointer to data bytes
+	call	writeout	; Write the sector to file
+
+	pop	hl		; restore pointer
+	pop	af		;  and count
+	dec	a
+	jr	nz,wrlog3	; next sector
+
+wrlog4:	ld	hl,cursec	; Increment sector number
+	inc	(hl)
+	ld	a,(numsecs)	; Have we written whole track?
+	cp	(hl)
+	jr	nz,wrinext	; No
+
+	jp	trackdone	; Yes, track written
+
+;-------------------------------
+
+	cseg
+;
+; Fill the sector with 0xE5's
+rdfill::
+	ld	de,fillmsg
+	call	printm
+	call	getchar
+	cp	'y'
+	jr	z,fillit
+	cp	'Y'
+	jr	nz,nofill
+
+fillit:	ld	de,yesmsg
+	call	printm
+
+	ld	hl,(@dma)
+	ld	bc,(cursize)
+
+fille5:	ld	(hl),0E5h
+	dec	bc
+	ld	a,b
+	or	c
+	jr	nz,fille5
+	ret
+
+nofill:	ld	de,nomsg
+	call	printm
+	or	0FFh		; Error status
+	ret
+
+	dseg
+
+fillmsg::
+	defb	cr,lf
+	defb	'Skip unreadable sector and fill with 0xE5',quote
+	defb	's (Y/N) <N> ? $'
+
+yesmsg::
+	defb	'Yes',cr,lf,'$'
+
+nomsg::	defb	'No',cr,lf,'$'
+
+;-------------------------------
+
+	cseg
+;
+; Write track header in IMD file
+wrtrkhdr::
+	push	hl		; Mode byte FM=00, MFM=01
+	push	de
+	ld	hl,tkhd		; Point <HL> to track header buffer
+	ld	de,(cursize)	; Sector size in <DE>
+	ld	a,e
+	ld	(hl),3		; Assume MFM
+	cp	128
+	jr	nz,wh0
+	ld	(hl),0		; Oops, it's FM
+wh0:	inc	hl
+
+	ld	b,0		; Assume Head=0
+
+  if disk1$bb2$read9
+	ld	a,(@dtyp)	; Bigboard-II disk type?
+	cp	dskd7
+	jr	nc,wh9		; Yes, different Cyl and Hd
+  endif				;  mapping scheme
+
+	; CompuPro scheme
+wh1:	ld	a,(sides)
+	or	a
+	jr	z,wh4		; If single-sided
+
+	ld	a,(curtrk)	; Double-sided
+	srl	a		; Cyl=Trk/2
+	jr	nc,wh2
+	inc	b		; Head=1 if Trk is odd
+	jr	wh2
+
+  if disk1$bb2$read9
+
+	; BigBoard-II scheme
+wh9:
+    if trk0sd
+	ld	a,(curtrk)	; Track zero is Single Density
+	or	a
+	jr	z,wh4
+    endif
+
+	set	6,b		; Flag Head map On
+
+	ld	a,(sides)
+	or	a
+	jr	z,wh4		; If single-sided
+
+	set	7,b		; Flag Cylinder map On too
+	ld	a,(curtrk)	; If Trk < 77, Cyl=Trk, Head=0
+	cp	77
+	jr	c,wh2
+	sub	77		; else Cyl=Trk-77, Head=1
+	inc	b
+	jr	wh2
+  endif
+
+wh4:	ld	a,(curtrk)	; Single-sided
+
+wh2:	ld	(hl),a		; Cyl=Trk
+	inc	hl
+	ld	(hl),b		; Head 
+	inc	hl
+	ld	a,(numsecs)	; Sectors per Track
+	ld	(hl),a
+	inc	hl
+				; Calculate log2(Sector size)
+	ld	a,d		; High byte of size
+	cp	3		;  is correct value
+	jr	c,wh3		;  except for 1024
+	dec	a		;  which needs adjusting
+wh3:	ld	(hl),a
+	ld	a,(numsecs)	; Sector number map
+	add	a,5		;  already in place, so
+	ld	b,a		;  compute header size
+	ld	de,tkhd
+	call	writeout 	; Write it to file
+
+  if disk1$bb2$read9
+	ld	a,(@dtyp)	; BigBoard-II disk type?
+	cp	dskd7
+	jr	c,whdone	; No
+
+    if trk0sd
+	ld	a,(curtrk)	; No mapping for Track zero
+	or	a
+	jr	z,whdone
+    endif
+
+	ld	a,(sides)
+	or	a
+	jr	z,hdm0		; Single sided - Head map only	
+
+	ld	a,(numsecs)
+	ld	b,a		; Yes, generate Cylinder map
+	ld	hl,mapsec
+	push	hl
+	push	bc
+	ld	a,(curtrk)	; Cylinder map
+	cp	77		; If Trk<77 then Trk else Trk-77
+	jr	c,cym1
+	sub	77
+cym1:	ld	(hl),a
+	inc	hl
+	djnz	cym1
+	pop	bc
+	pop	de
+	call	writeout
+
+hdm0::	ld	a,(numsecs)
+	ld	b,a
+	ld	hl,mapsec
+	push	hl
+	push	bc
+	ld	c,12h		; Head map
+	ld	a,(curtrk)
+	cp	77
+	jr	c,hdm1		; If Trk<77 then 12H else 13H
+	inc	c
+hdm1:	ld	(hl),c
+	inc	hl
+	djnz	hdm1
+	pop	bc
+	pop	de
+	call	writeout
+  endif
+
+whdone::
+	pop	de
+	pop	hl
+	ret
+
+	dseg
+
+tkhd::
+	defb 0			; Mode
+	defb 0			; Cyl (0-n)
+	defb 0			; Hd
+	defb 26			; SpT (1-n)
+	defb 0			; log2(SecSize)
+	defb 1,2,3,4,5,6,7,8	; sector number map
+	defb 9,10,11,12,13,14,15
+	defb 16,17,18,19,20,21,22,23,24,25,26
+
+;
+; Check if all bytes are the same in buffer pointed to by <HL>
+; If so, output compressed IMD data record and return carry
+; bit set, otherwise output normal data ID byte
+; 
+	cseg
+chkcompress::
+	push	hl		; Save registers
+	push	de
+	push	bc
+	ld	a,(hl)
+	ld	bc,(cursize)
+nochk1:	cpi			; Is there a match?
+	jp	po,nochk2	; P-bit set if whole sector searched	
+	jr	z,nochk1	; Yes, check next byte
+	jr	nochk3		; No match, clear carry
+
+nochk2:	jr	nz,nochk3	; No match on last byte
+
+	; All bytes the same
+
+	ld	(cmpval),a	; Write "Compressed" ID tag
+	ld	b,2		;  and value
+	ld	de,cmpid
+	call	writeout
+
+	scf			; Set Carry
+	jr	nochk4
+
+	
+nochk3:	; Not compressed
+
+	ld	b,1		; Write "Not Compressed" ID tag
+	ld	de,ncmpid
+	call	writeout
+
+	or	a		; Clear Carry
+
+nochk4:	pop	bc		; Restore registers
+	pop	de
+	pop	hl
+	ret
+
+	dseg
+
+ncmpid:	defb	01
+
+cmpid:	defb	02
+cmpval:	defs	1
+
+;
+; Write <B> bytes in buffer pointed to by <DE>
+	cseg
+writeout::
+	ld	a,(bufcnt)	; Bytes already in record
+	ld	c,a
+	ld	hl,(bufptr)	; Get pointer
+
+writeb:	inc	c
+	ld	a,(de)
+	inc	de
+	ld	(hl),a
+	inc	hl
+	ld	a,c
+	cp	128	
+	jr	nz,wrnxtb
+
+	push	bc		; Save counters and
+	push	de		;  pointer
+
+	call	wrbfimd		; Write buffer to .IMD file
+
+	pop	de
+	pop	bc
+
+	ld	c,0		; Reset byte counter
+	ld	hl,buffer	;  and pointer
+
+wrnxtb:	djnz	writeb
+
+	ld	(bufptr),hl	; Update pointer
+	ld	a,c		;  and counter
+	ld	(bufcnt),a
+
+	ret			; All done
+
+; Write 128-byte buffer to .IMD file
+;
+wrbfimd::
+	ld	de,buffer	; Point DMA to sector buffer
+	ld	c,f$setdma
+	call	bdos
+
+	ld	de,imdfcb	; Write sector
+	ld	c,f$writefile
+	call	bdos
+	or	a
+	jr	nz,wrierr
+
+	push	ix
+	push	iy
+	ld	ix,filesize	; Increment record count
+	inc	(ix+0)
+	jr	nz,wrb1
+	inc	(ix+1)
+	jr	nz,wrb1
+	inc	(ix+2)
+wrb1:	ld	iy,freespace	; Is it equal to freespace?
+	ld	a,(iy+0)
+	cp	(ix+0)
+	jr	nz,wrbdone
+	ld	a,(ix+1)
+	cp	(iy+1)
+	jr	nz,wrbdone
+	ld	a,(ix+2)
+	cp	(iy+2)
+	jr	nz,wrbdone
+
+	call	closeimdf	; Close file
+	ld	de,fullmsg	; Tell them "Disk full..."
+	call	printm
+	call	getimdfilename	; Get filename for continuation part
+	jp	c,badresp
+	ld	(dstdrv),a
+	add	a,'A'
+	ld	(dstnam),a
+	ld	(msgfname),a
+	ld	de,crlfmsg
+	call	printm
+	call	mount		; Prompt for disk change
+	ld	a,(srcdrv)	; If source and destination
+	ld	b,a		;  drive are the same, abort
+	ld	a,(dstdrv)
+	cp	b
+	jp	z,sameerr
+	ld	c,f$resetdisks	; Reset disk system
+	call	bdos
+	call	opennext	; Open next part
+
+wrbdone::
+	pop	iy
+	pop	ix
+	ret
+
+wrierr::
+	ld	de,wrimderr	; Fatal error writing image file
+	jp	abort
+
+rderror::
+	ld	de,rdermsg	; Print 'Read'
+	jr	secerror
+
+wrerror::
+	ld	de,wrermsg	; Print 'Write'
+
+secerror::
+	call	printm		; Print ' error - Sector '
+	ld	de,errormsg
+	call	printm
+	ld	a,(cursec)	; Get sector
+	ld	c,a
+	ld	b,0
+	call	sectrans	; Translate
+	ld	h,b
+	ld	l,c
+	call	pdec
+	ld	de,crlfmsg
+	jp	abort		; Abort
+
+	dseg
+trkmsg::
+	defb	'   ',cr,'Track $'
+
+rdermsg::
+	defb	' Read$'
+
+wrermsg::
+	defb	' Write$'
+
+errormsg::
+	defb	' error - Sector $'
+
+wrimderr::
+	defb	'?Fatal - write error to image file',cr,lf,'$'
+
+fullmsg::
+	defb	cr,lf,'Disk full, partial image file closed.'
+	defb	cr,lf,'Specify image filename for next part on next disk.'
+	defb	cr,lf,'$'
+
+;-------------------------------
+;
+; Lookup the sector number at position BC in the sector buffer
+;
+	cseg
+lookupsec::
+	ld	a,(numsecs)	; Select one of the local buffer
+	ld	hl,xlt26	;  translation tables
+	cp	26
+	jr	z,look
+	ld	hl,xlt15
+ç
+	cp	15
+	jr	z,look
+	ld	hl,xlt08
+	cp	8
+	jr	z,look
+	ret			; Return if no table
+
+look:	ld	a,c		; Value to lookup
+	ld	c,0		; Initial offset
+
+looknxt:
+	cp	(hl)
+	jr	z,lupbios	; Found it
+	inc	c
+	inc	hl
+	jr	looknxt
+
+lupbios:
+	ret
+
+;-------------------------------
+
+	cseg
+sectrans::
+	ld	a,(numsecs)	; Select one of the
+	ld	de,xlt26	;  translation tables
+	cp	26
+	jr	z,translate
+	ld	de,xlt15
+	cp	15
+	jr	z,translate
+	ld	de,xlt08
+	cp	8
+	jr	z,translate
+	ret			; Return if no table
+
+translate:
+	ld	l,c		; Extract entry for this
+	ld	h,b		;  sector from the table
+	add	hl,de		;  pointed at by DE
+	ld	c,(hl)
+	ret
+
+;-------------------------------
+
+	dseg
+;
+; These are sector translation tables for faster
+; disk copying - not the ones in the system BIOS
+;
+xlt26::
+	defb	0,2,4,6,8,10,12,14,16,18,20,22,24
+	defb	1,3,5,7,9,11,13,15,17,19,21,23,25
+
+xlt15::
+	defb	0,2,4,6,8,10,12,14
+	defb	1,3,5,7,9,11,13
+
+xlt08::
+	defb	0,2,4,6,1,3,5,7
+
+;-------------------------------
+
+	cseg
+?pmsg::
+	push	bc
+	push	de
+pmsg$loop:
+	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	z,pmsg$exit
+	ld	c,a
+	push	hl
+	call	?cono
+	pop	hl
+	jr	pmsg$loop
+pmsg$exit:
+	pop	de
+	pop	bc
+	ret
+
+	cseg
+?pderr::
+	ld	hl,drive$msg
+	call	?pmsg
+	push	hl
+	ld	a,(@adrv)
+	add	a,'A'
+	ld	c,a
+	call	?cono
+	pop	hl
+	call	?pmsg
+	push	hl
+	ld	hl,(@trk)
+	call	?pdec
+	pop	hl
+	call	?pmsg
+	ld	hl,(@sect)
+	; fall into ?pdec
+
+?pdec::
+pdec::
+		; print binary number 0-65535 from <HL>
+
+	ld	bc,-10		; get some useful constants
+
+pdec1:	ld	de,-1
+
+pdec2:	add	hl,bc		; subtract as many 10s as possible
+	inc	de		; count them
+	jr	c,pdec2		; if some left, keep going
+	push	hl		; save remainder-10
+	ex	de,hl		; swap the remainder and quotient
+	ld	a,h		; get the number of 10s found
+	or	L		; check quotient for non-zero
+	call	nz,pdec1	; if non-zero, recurse
+	pop	hl		; get the remainder-10
+	ld	a,L		; in A
+	add	a,'0'+10	; make the number printable and add the 10 back
+cono:	push	bc
+	push	de
+	push	hl
+	ld	e,a		; print it on the console
+condo:	ld	c,f$conio
+	call	bdos
+	pop	hl
+	pop	de
+	pop	bc
+	ret
+
+?phex::	push	af
+	rrca
+	rrca
+	rrca
+	rrca
+	call	phexc
+	pop	af
+phexc:	and	0fh
+	add	a,90h
+	daa
+	adc	a,40h
+	daa
+	ld	c,a
+
+?cono::
+	ld	a,c		;Print character in <C>
+	jr	cono
+
+?conin::
+	push	bc		;Input character to <A>
+	push	de
+	push	hl
+	ld	e,0FDh
+	jr	condo
+
+?const::
+	push	bc		;Console status to <A>
+	push	de
+	push	hl
+	ld	e,0FEh
+	jr	condo
+
+;
+; *** Get console input without echo, and shift to upper case
+;
+?getch::
+	call	?const
+	or	a
+	jr	z,u$c1		; see if any char already struck
+	call	?conin
+	jr	?getch		; yes, eat it and try again
+u$c1:
+	call	?conin		; get a character
+	and	7Fh		; no parity
+	cp	'z'+1		; make upper case
+	ret	nc
+	cp	'a'
+	ret	c
+	sub	'a'-'A'
+	ret
+
+;
+; *** Print byte at HL in hex followed by a space
+;
+?phexm::
+	push	hl
+	push	bc
+	ld	a,(hl)
+	call	?phex
+	ld	c,' '
+	call	?cono
+	pop	bc
+	pop	hl
+	ret
+
+	dseg
+drive$msg:	db	cr,lf,cr,lf,'Disk I/O Error on ',0
+track$msg:	db	': T=',0
+sector$msg:	db	', S=',0
+
+;-------------------------------
+
+	cseg
+divide::
+		; divide <DE> by <A>,
+		; returns quotient in <E>,
+		; and remainder in <D>
+
+	ld	c,a		; save divisor in C
+	ld	b,8		; loop counter
+	ld	a,d		; will use A and E 
+
+div1:	sla	e		; shift low order byte and
+	rla			; rotate carry into high byte
+	sub	c		; subtract divisor
+	jp	p,div2		; if result still positive
+	add	a,c		; add divisor and do next bit
+	jr	div3
+
+div2:	set	0,e		; set low quotient bit
+
+div3:	djnz	div1		; next bit
+	ld	d,a		; return results
+	ld	a,e
+	ret
+
+;-------------------------------
+
+	cseg
+openout::
+	ld	hl,buffer	; Init buffer pointer
+	ld	(bufptr),hl
+	xor	a
+	ld	(bufcnt),a
+
+opennext::
+	ld	de,imdfcb	; Erase any file of the same name
+	ld	c,f$deletefile
+	call	bdos
+
+	ld	de,freespace	; Set DMA to get free space
+	ld	c,f$setdma	;  on this drive
+	call	bdos
+	ld	a,(dstdrv)
+	ld	e,a
+	ld	c,f$getfreespace
+	call	bdos
+	ld	de,freeerr
+	or	a
+	jr	nz,printerr
+
+	; <A> is zero
+	ld	d,a		; Set filesize = 0
+	ld	e,a
+	ld	(filesize),de
+	ld	(fsize2),a
+	
+	ld	de,imdfcb	; Create file
+	ld	c,f$makefile
+	call	bdos
+	ld	de,createrr
+	inc	a		; Abort if error creating file
+	ret	nz
+	jr	printerr
+
+	cseg
+closeout::
+	ld	b,1		; Write EOF (ctrl-z)
+	ld	de,eof
+	call	writeout
+
+	ld	a,(bufcnt)	; Anything in buffer?
+	or	a
+	jr	z,closeimdf	; It's empty
+
+	ld	c,a		; How full?
+	ld	a,128
+	sub	c
+	jr	z,flushout	; It's full
+
+	ld	b,a		; Pad with zeroes
+	ld	hl,(bufptr)
+fill0:	ld	(hl),0
+	inc	hl
+	djnz	fill0
+
+flushout:
+	call	wrbfimd		; Write buffer to .IMD file
+
+closeimdf::
+	ld	de,imdfcb	; Close image file
+	ld	c,f$closefile
+	call	bdos
+	ld	de,closeerr
+	inc	a
+	ret	nz
+
+printerr::
+	push	de
+	ld	de,progidmsg
+	call	printm
+	pop	de
+
+printm::
+	ld	c,f$print
+	jp	bdos
+
+	dseg
+progidmsg:
+	defb	cr,lf,'?D2IMD-$'
+eof:
+	defb	ctrlz
+
+;-------------------------------
+
+	cseg
+headerout::
+	ld	b,imdhdl	; Write IMD file header
+	ld	de,imdhdr
+	call	writeout
+
+	ret
+
+;-------------------------------
+
+	cseg
+getchar::
+	ld	e,0FFh		; Get a character without
+	ld	c,f$conio	;  echo from the console
+	call	bdos
+	and	noparity
+	jr	z,getchar
+	ret
+
+;-------------------------------
+
+	cseg
+putchar::
+	ld	e,a		; Output character to
+	ld	c,f$conio	;  console
+	jp	bdos
+
+;-------------------------------
+
+; Select the Specfied Disk Drive
+ç
+; Entry parameters
+;	C=Drive (0-15)
+;	E=Initial Select Flag
+; Returned values
+;	HL=address of DPH or 0000h if on-existent drive
+;
+seldsk::
+	ld	a,c
+	ld	(@adrv),a	; Save drive select code
+	ld	l,c
+	ld	h,0
+	add	hl,hl
+	ld	bc,@dtbl	; Index into drive table
+	add	hl,bc
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a		; Point to disk descriptor
+	or	a
+	jp	z,undef		; No entry in table, undefined disk
+	ld	a,e
+	and	1		; Examine login hint bit
+	ret	nz		; Return if already selected
+	push	hl
+	ex	de,hl		; Put pointer to DPB in <DE>
+	ld	hl,-2
+	add	hl,de
+	ld	a,(hl)
+	ld	(@rdrv),a	; Get relative drive
+	ld	hl,-6
+	add	hl,de		; Find LOGIN addr
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	call	ipchl
+	pop	hl
+	ret
+
+ipchl:	jp	(hl)		; Vectored call
+
+;-------------------------------
+
+; Set Address for Subsequent Disk I/O
+; Entry parameter
+;	BC=DMA Address
+; Returned value
+;	None
+;
+setdma::
+	ld	(@dma),bc
+	ld	a,(@cbnk)
+	; fall through into setbnk
+
+;-------------------------------
+
+; Set Bank for DMA Operation
+; Entry parameter
+;	A=Memory Bank
+; Returned value
+;	None
+;
+setbnk::
+	ld	(@dbnk),a
+	ret
+
+;-------------------------------
+
+; Set Track Number for Subsequent Disk I/O
+; Entry parameter
+;	BC=Track Number
+; Returned value
+;	None
+;
+settrk::
+	ld	(@trk),bc
+	ret
+;-------------------------------
+
+; Set Sector Number for Subsequent Disk I/O
+; Entry parameter
+;	BC=Sector Number
+; Returned value
+;	None
+;
+setsec::
+	ld	(@sect),bc
+	ret
+;-------------------------------
+
+; Read a Sector
+; Entry parameter
+;	None
+; Returned value
+;	A=00h if no errors
+;	A=01h if non-recoverable error
+;	A=FFh if media has changed
+;
+read::
+	ld	hl,(@adrv)
+	ld	h,0
+	add	hl,hl		; Get drive code and double it
+	ld	de,@dtbl
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	push	hl
+	ld	de,-8
+	add	hl,de
+	jr	rw$common
+
+;-------------------------------
+
+; Write a Sector
+; Entry parameter
+;	C=Deblocking Codes
+; Returned value
+;	A=00h if no errors
+;	A=01h if physical error
+;	A=02h if disk is  Read-Only
+;	A=FFh if media has changed
+;
+write::
+	ld	hl,(@adrv)
+	ld	h,0
+	add	hl,hl		; Get drive code and double it
+	ld	de,@dtbl
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	push	hl
+	ld	de,-10
+	add	hl,de
+
+rw$common::
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	pop	de	; Recover address of table
+	dec	de
+	dec	de	; Point to relative drive
+	ld	a,(de)
+	ld	(@rdrv),a
+	inc	de
+	ld	a,(de)
+	ld	(@dtyp),a
+	inc	de
+	jp	(hl)
+
+;-------------------------------
+
+	dseg
+bank::
+	defs	1	; Current memory bank number
+srcdrv::
+	defs	1	; Source drive code
+srcdpb::
+	defs	2	; Source disk parameter block pointer
+dstdrv::
+	defs	1	; Destination drive code
+dstdpb::
+	defs	2	; Destination disk parameter block pointer
+secsize::
+	defs	2	; Sector size
+spt::
+	defs	2	; Sectors per track
+tracks::
+	defs	1	; Number of tracks
+sides::
+	defs	1	; Number of sides
+curtrk::
+	defs	1	; Current track being copied
+cursec::
+	defs	1	; Current sector number
+cursize::
+	defs	2	; Current sector size
+numsecs::
+	defs	1	; Number of sectors on current track
+logcnt::
+	defs	1	; Number of logical sectors per physical sector
+srcselhint::
+	defs	1	; Source disk selection hintstselhint::
+dstselhint::
+	defs	1	; Destination disk selection hint
+
+; Disk "BIOS" variables
+
+@ermde::
+	defb	0	; Dummy Error mode so FDDISK1 reports errors
+@adrv::
+	defs	1	; Currently selected disk drive
+@rdrv::
+	defs	1	; Controller relative disk drive	
+@trk::
+	defs	2	; Current track number
+@sect::
+	defs	2	; Current sector number
+@dtyp::
+	defs	1	; Current disk type
+@cnt::
+	defb	0	; Record count for multi-sector transfer
+@dma::
+	defs	2	; Current DMA address
+@dbnk::
+	defb	0	; Bank for DMA operation
+@cbnk::
+	defb	0	; Bank for processor operations
+
+@dtbl::
+	drivetable	; 16-word "dummy" drive table (maps CP/M
+			; drive letter to physical disk unit number
+
+imdfcb::	; Image file file control block
+imdfdrv::
+	defb	0		; drive
+imdfnam::
+	defb	'        '	; filename
+imdftyp::
+	defb	'   '		; filetype
+imdfex::
+	defb	0		; extent
+	defb	0,0
+imdfrc::
+	defb	0		; record count for extent
+	defb	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+imdfcr::
+	defb	0		; current record
+	defb	0,0,0
+
+;
+; This is the "static" IMD file header - written to all image files
+
+imdhdr::
+	defb	'IMD 1.16: 26/05/2007 10:24:01',cr,lf
+	defb	cr,lf,ctrlz
+imdhdl	equ	$-imdhdr
+
+
+bufptr::
+	defw	buffer	; Buffer pointer
+bufcnt::
+	defb	0	; Count of bytes in buffer
+buffer::
+	defs	128	; File output buffer
+bufend::
+
+	defs	128	; Stack space
+stack::
+	defs	2	; Saved stack pointer
+
+freespace::		; Disk Free Space on output .IMD file drive
+free0:	defs	1	; low byte
+free1:	defs	1	; middle byte
+free2:	defs	1	; high byte
+
+filesize::		; Number of 128-byte records written to .IMD file
+fsize0:	defs	1
+fsize1:	defs	1
+fsize2:	defs	1
+
+trkbuf::
+trkbs0::	defs	1024
+trkbs1::	defs	1024
+trkbs2::	defs	1024
+trkbs3::	defs	1024
+trkbs4::	defs	1024
+trkbs5::	defs	1024
+trkbs6::	defs	1024
+trkbs7::	defs	1024
+
+  if disk1$bb2$read9
+
+trkbs8::	defs	1024	; Additional buffer for 9th sector
+
+; BigBoard-II Cylinder and Head value mappings
+
+mapsec:	defs	9
+
+  endif
+
+	end	start

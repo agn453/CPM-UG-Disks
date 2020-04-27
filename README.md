@@ -70,12 +70,12 @@ A>L:
 
 To exit SIMH use Ctrl-E, then quit to the sim> prompt.
 Drive L: corresponds to the attached floppy disk image.
-
 ```
 
 Note:  In user area 3 on drive A: is the program I used to
 produce the disk images (D2IMD). It uses a separate copy
-of disk I/O routines for raw disk access using the
-emulated Godbout/CompuPro DISK1A floppy disk controller.
+of disk I/O routines for raw disk access using the real (and
+emulated) Godbout/CompuPro DISK1A floppy disk controller.
+
 I've also included the source code in the *d2imd* folder.
 

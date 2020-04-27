@@ -82,15 +82,17 @@ I've also included the source code in the *d2imd* folder.
 Some History
 ------------
 
-I obtained the 8-inch disks copies from Bill Bolton who
-ran one of the first RCPM Bulletin Boards in Sydney,
+I obtained the 8-inch disk copies from Bill Bolton who
+ran one of the first RCP/M Bulletin Boards in Sydney,
 Australia (Software Tools RCP/M).
 
 I physically drove to Sydney from my home in Newcastle (about
-140km) to make them with a stock of blank floppies and ran
-a sector-based disk copy program for many hours to make them.
-I think Bill's system was a XITAN S-100 system.  Bill's disks
-were sent to him by airmail from the USA.
+140km). With a stock of blank floppies it took me many hours
+with a sector-based disk copy program to make them.
+I think Bill's system was a XITAN S-100 system with a
+whopping 5 or 10 MB hard drive.
+Bill received his copies of CP/M Users Group and SIG/M
+disks by airmail from the USA.
 
 It was at a time when it was quicker doing this than downloading
 them at 300 or 1200/75 baud via a modem!  I also ran an RCP/M

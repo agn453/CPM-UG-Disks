@@ -5,9 +5,9 @@ text=auto
 *.imd binary
 *.SUB text eol=crlf
 *.LIB text eol=crlf
-*.MAC text eol=crlf
-*.ASM text eol=crlf
-*.C text eol=crlf
+*.MAC text eol=crlf linguist-language=Assembly
+*.ASM text eol=crlf linguist-language=Assembly
+*.C text eol=crlf linguist-language=C
 *.TXT text eol=crlf
 *.BAS text eol=crlf
 

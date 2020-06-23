@@ -3,11 +3,11 @@ text=auto
 
 *.IMD binary
 *.imd binary
-*.SUB eol=crlf
-*.LIB eol=crlf
-*.MAC eol=crlf
-*.ASM eol=crlf
-*.C eol=crlf
-*.TXT eol=crlf
-*.BAS eol=crlf
+*.SUB text eol=crlf
+*.LIB text eol=crlf
+*.MAC text eol=crlf
+*.ASM text eol=crlf
+*.C text eol=crlf
+*.TXT text eol=crlf
+*.BAS text eol=crlf
 
